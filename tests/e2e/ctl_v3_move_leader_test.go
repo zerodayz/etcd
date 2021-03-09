@@ -29,25 +29,36 @@ import (
 )
 
 func TestCtlV3MoveLeaderSecure(t *testing.T) {
-	testCtlV3MoveLeader(t, *newConfigTLS())
+	testCtlV3MoveLeader(t, withCfg(*newConfigTLS()))
+	testCtlV3MoveLeader(t, withCfg(*newConfigTLS()), withFlagByEnv())
 }
 
 func TestCtlV3MoveLeaderInsecure(t *testing.T) {
-	testCtlV3MoveLeader(t, *newConfigNoTLS())
+	testCtlV3MoveLeader(t, withCfg(*newConfigNoTLS()))
+	testCtlV3MoveLeader(t, withCfg(*newConfigNoTLS()), withFlagByEnv())
 }
 
-func testCtlV3MoveLeader(t *testing.T, cfg etcdProcessClusterConfig) {
+func testCtlV3MoveLeader(t *testing.T, opts ...ctlOption) {
 	defer testutil.AfterTest(t)
 
-	epc := setupEtcdctlTest(t, &cfg, true)
+	ret := ctlCtx{
+		t:           t,
+		cfg:         *newConfigAutoTLS(),
+		dialTimeout: 7 * time.Second,
+	}
+	ret.applyOpts(opts)
+
+	epc := setupEtcdctlTest(t, &ret.cfg, true)
+	ret.epc = epc
+
 	defer func() {
-		if errC := epc.Close(); errC != nil {
+		if errC := ret.epc.Close(); errC != nil {
 			t.Fatalf("error closing etcd processes (%v)", errC)
 		}
 	}()
 
 	var tcfg *tls.Config
-	if cfg.clientTLS == clientTLS {
+	if ret.cfg.clientTLS == clientTLS {
 		tinfo := transport.TLSInfo{
 			CertFile:      certPath,
 			KeyFile:       privateKeyPath,
@@ -90,26 +101,21 @@ func testCtlV3MoveLeader(t *testing.T, cfg etcdProcessClusterConfig) {
 
 	os.Setenv("ETCDCTL_API", "3")
 	defer os.Unsetenv("ETCDCTL_API")
-	cx := ctlCtx{
-		t:           t,
-		cfg:         *newConfigNoTLS(),
-		dialTimeout: 7 * time.Second,
-		epc:         epc,
-	}
 
 	tests := []struct {
 		prefixes []string
 		expect   string
 	}{
 		{ // request to non-leader
-			cx.prefixArgs([]string{cx.epc.EndpointsV3()[(leadIdx+1)%3]}),
+			ret.prefixArgs([]string{ret.epc.EndpointsV3()[(leadIdx+1)%3]}),
 			"no leader endpoint given at ",
 		},
 		{ // request to leader
-			cx.prefixArgs([]string{cx.epc.EndpointsV3()[leadIdx]}),
+			ret.prefixArgs([]string{ret.epc.EndpointsV3()[leadIdx]}),
 			fmt.Sprintf("Leadership transferred from %s to %s", types.ID(leaderID), types.ID(transferee)),
 		},
 	}
+
 	for i, tc := range tests {
 		cmdArgs := append(tc.prefixes, "move-leader", types.ID(transferee).String())
 		if err := spawnWithExpect(cmdArgs, tc.expect); err != nil {
